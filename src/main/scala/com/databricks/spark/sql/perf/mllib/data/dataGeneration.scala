@@ -5,7 +5,9 @@ import org.apache.spark.ml.linalg.Vector
 import org.apache.spark.ml.recommendation.ALS.Rating
 import org.apache.spark.mllib.random._
 import org.apache.spark.rdd.{PairRDDFunctions, RDD}
-import org.apache.spark.sql.{SQLContext, DataFrame}
+import org.apache.spark.sql.{DataFrame, SQLContext}
+
+import scala.collection.mutable
 
 
 object DataGenerator {
@@ -103,8 +105,31 @@ object DataGenerator {
 
     (sql.createDataFrame(trainPruned), sql.createDataFrame(finalTest))
   }
-}
 
+  def generateRandString(
+      sql: SQLContext,
+      numExamples: Long,
+      seed: Long,
+      numPartitions: Int,
+      minLen: Int,
+      maxLen: Int,
+      charSet: String): DataFrame = {
+    val rdd: RDD[String] = RandomRDDs.randomRDD(sql.sparkContext,
+      new RandStringGenerator(minLen, maxLen, charSet), numExamples, numPartitions, seed)
+    sql.createDataFrame(rdd.map(Tuple1.apply)).toDF("label")
+  }
+
+  def generateOverlappedString(
+      sql: SQLContext,
+      numExamples: Long,
+      seed: Long,
+      numPartitions: Int,
+      distinctCount: Int): DataFrame = {
+    val rdd: RDD[String] = RandomRDDs.randomRDD(sql.sparkContext,
+      new OverlappedStringGenerator(distinctCount), numExamples, numPartitions, seed)
+    sql.createDataFrame(rdd.map(Tuple1.apply)).toDF("label")
+  }
+}
 
 /**
  * Generator for a feature vector which can include a mix of categorical and continuous features.
@@ -188,4 +213,60 @@ class GaussianMixtureDataGenerator(
 
   override def copy(): GaussianMixtureDataGenerator =
     new GaussianMixtureDataGenerator(numCenters, numFeatures, seed)
+}
+
+
+class RandStringGenerator(
+    val minLen: Int,
+    val maxLen: Int,
+    val charSet: String) extends RandomDataGenerator[String] {
+
+  private val rng = new java.util.Random()
+
+  override def nextValue(): String = {
+    val sb = new StringBuilder
+    var i = 0
+    val strLen = if (minLen == maxLen) minLen else {
+      minLen + rng.nextInt(maxLen - minLen + 1)
+    }
+    while (i < strLen) {
+      val nextChar = charSet.charAt(rng.nextInt(charSet.length))
+      sb.append(nextChar)
+      i += 1
+    }
+    sb.toString()
+  }
+
+  override def setSeed(seed: Long) {
+    rng.setSeed(seed)
+  }
+
+  override def copy(): RandStringGenerator = new RandStringGenerator(minLen, maxLen, charSet)
+}
+
+class OverlappedStringGenerator(
+    distinctCount: Int) extends RandomDataGenerator[String] {
+
+  private val rng = new java.util.Random()
+  private val distinctSetRng = new java.util.Random(123L)
+
+  @transient private var distinctSet: Array[String] = null
+
+  override def nextValue(): String = {
+    if (distinctSet == null) {
+      val hashSet = new collection.mutable.HashSet[Long]
+      while (hashSet.size < distinctCount) {
+        val v = distinctSetRng.nextLong()
+        hashSet.add(v)
+      }
+      distinctSet = hashSet.toArray.map(_.toString)
+    }
+    distinctSet(rng.nextInt(distinctSet.length))
+  }
+
+  override def setSeed(seed: Long) {
+    rng.setSeed(seed)
+  }
+
+  override def copy(): OverlappedStringGenerator = new OverlappedStringGenerator(distinctCount)
 }
